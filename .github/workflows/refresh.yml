@@ -8,7 +8,8 @@ on:
   workflow_dispatch:        # Actions 页可手动触发，做首次测试用
 
 permissions:
-  contents: write           # 需要写权限创建 / 更新 release
+  contents: write           # 兼容性保留
+  issues: write             # 需要写 issue body
 
 jobs:
   refresh:
@@ -84,14 +85,38 @@ jobs:
           print(f"wrote {len(out)} models, {sum(len(x['readme']) for x in out)} chars of READMEs")
           PY
 
-      - name: Publish as release asset
+      - name: Trim README size to fit in issue body
+        # GitHub issue body 上限 65536 字符。15 模型 × ~3000 字符 README 会顶满。
+        # 把每个 README 缩到 ~2000，留出安全余量。
+        run: |
+          python <<'PY'
+          import json
+          d = json.load(open('trending.json'))
+          for m in d['models']:
+              m['readme'] = (m.get('readme') or '')[:2000]
+          payload = json.dumps(d, ensure_ascii=False, indent=None)
+          with open('trending.body.txt', 'w') as f:
+              f.write(payload)
+          print(f"body size: {len(payload)} chars")
+          assert len(payload) < 60000, f"too big: {len(payload)}"
+          PY
+
+      - name: Publish to issue body
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 第一次跑时创建 release；后续跑只更新 asset
-          gh release create latest \
-            --title "Latest HF Trending Snapshot" \
-            --notes "Auto-updated by GitHub Actions" 2>/dev/null || true
-          gh release upload latest trending.json --clobber
-          echo "Release asset URL:"
-          echo "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/trending.json"
+          # 找有没有标题为 "trending-data" 的 issue。
+          # 第一次跑会创建，之后跑会复用同一个 issue（只改 body）。
+          ISSUE_NUM=$(gh issue list --search 'trending-data in:title' --json number --jq '.[0].number // empty')
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "→ Creating new tracking issue..."
+            gh issue create \
+              --title 'trending-data (auto-updated daily; do not close)' \
+              --body-file trending.body.txt
+            ISSUE_NUM=$(gh issue list --search 'trending-data in:title' --json number --jq '.[0].number')
+          else
+            echo "→ Updating issue #$ISSUE_NUM..."
+            gh issue edit "$ISSUE_NUM" --body-file trending.body.txt
+          fi
+          echo "Cowork should fetch:"
+          echo "https://github.com/$GITHUB_REPOSITORY/issues/$ISSUE_NUM"
