@@ -1,0 +1,84 @@
+name: Refresh HF Trending
+
+on:
+  schedule:
+    # 00:30 UTC = 08:30 北京时间。提前 30 分钟跑，留出抖动缓冲，
+    # 让下游（Cowork 9:00 的定时任务）能稳定拿到当天的数据。
+    - cron: '30 0 * * *'
+  workflow_dispatch:        # Actions 页可手动触发，做首次测试用
+
+permissions:
+  contents: write           # 需要写权限创建 / 更新 release
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install --quiet huggingface_hub
+
+      - name: Fetch HF trending
+        run: |
+          python <<'PY'
+          from huggingface_hub import HfApi, ModelCard
+          import json, traceback, datetime
+
+          api = HfApi()
+          models = api.list_models(
+              sort='trendingScore', direction=-1,
+              limit=15, full=True, cardData=True,
+          )
+
+          out = []
+          for m in models:
+              entry = {
+                  'id': m.id,
+                  'pipeline_tag': m.pipeline_tag,
+                  'downloads': m.downloads,
+                  'likes': m.likes,
+                  'last_modified': str(m.last_modified) if m.last_modified else None,
+                  'tags': (m.tags or [])[:10],
+                  'readme': '',
+                  'params_total': None,
+              }
+              # 参数量（从 safetensors 元数据反推）
+              try:
+                  if m.safetensors and m.safetensors.parameters:
+                      entry['params_total'] = sum(m.safetensors.parameters.values())
+              except Exception:
+                  pass
+              # README 前 3500 字符
+              try:
+                  card = ModelCard.load(m.id)
+                  entry['readme'] = (card.content or '')[:3500]
+              except Exception as e:
+                  entry['readme_error'] = str(e)
+              out.append(entry)
+
+          payload = {
+              'fetchedAt': datetime.datetime.utcnow().isoformat() + 'Z',
+              'models': out,
+          }
+          with open('trending.json', 'w') as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+          print(f"wrote {len(out)} models, {sum(len(x['readme']) for x in out)} chars of READMEs")
+          PY
+
+      - name: Publish as release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 第一次跑时创建 release；后续跑只更新 asset
+          gh release create latest \
+            --title "Latest HF Trending Snapshot" \
+            --notes "Auto-updated by GitHub Actions" 2>/dev/null || true
+          gh release upload latest trending.json --clobber
+          echo "Release asset URL:"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/trending.json"
