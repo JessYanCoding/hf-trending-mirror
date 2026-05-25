@@ -22,41 +22,54 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install --quiet huggingface_hub
+        run: pip install --quiet huggingface_hub requests
 
       - name: Fetch HF trending
         run: |
           python <<'PY'
-          from huggingface_hub import HfApi, ModelCard
-          import json, traceback, datetime
+          # 直接调 HF 的 HTTP API，不走 huggingface_hub 的高层 wrapper
+          # （新版库已经从 list_models() 里移除了 direction 参数，HTTP API 仍接受）
+          import requests, json, datetime
+          from huggingface_hub import ModelCard
 
-          api = HfApi()
-          models = api.list_models(
-              sort='trendingScore', direction=-1,
-              limit=15, full=True, cardData=True,
+          # 1) 拉 trending 列表
+          resp = requests.get(
+              'https://huggingface.co/api/models',
+              params={
+                  'sort': 'trendingScore',
+                  'direction': -1,
+                  'limit': 15,
+                  'full': 'true',
+                  'config': 'true',
+              },
+              timeout=30,
           )
+          resp.raise_for_status()
+          models = resp.json()
 
           out = []
           for m in models:
               entry = {
-                  'id': m.id,
-                  'pipeline_tag': m.pipeline_tag,
-                  'downloads': m.downloads,
-                  'likes': m.likes,
-                  'last_modified': str(m.last_modified) if m.last_modified else None,
-                  'tags': (m.tags or [])[:10],
+                  'id': m.get('id'),
+                  'pipeline_tag': m.get('pipeline_tag'),
+                  'downloads': m.get('downloads', 0),
+                  'likes': m.get('likes', 0),
+                  'last_modified': m.get('lastModified'),
+                  'tags': (m.get('tags') or [])[:10],
                   'readme': '',
                   'params_total': None,
               }
-              # 参数量（从 safetensors 元数据反推）
+              # 参数量（从 safetensors 元数据反推；JSON 里是字典格式）
               try:
-                  if m.safetensors and m.safetensors.parameters:
-                      entry['params_total'] = sum(m.safetensors.parameters.values())
-              except Exception:
-                  pass
-              # README 前 3500 字符
+                  st = m.get('safetensors') or {}
+                  params = st.get('parameters') or {}
+                  if isinstance(params, dict) and params:
+                      entry['params_total'] = sum(int(v) for v in params.values())
+              except Exception as e:
+                  entry['params_error'] = str(e)
+              # README 前 3500 字符（用 ModelCard 帮我们处理 raw URL 重定向）
               try:
-                  card = ModelCard.load(m.id)
+                  card = ModelCard.load(entry['id'])
                   entry['readme'] = (card.content or '')[:3500]
               except Exception as e:
                   entry['readme_error'] = str(e)
