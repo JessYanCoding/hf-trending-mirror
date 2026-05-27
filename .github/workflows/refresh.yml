@@ -108,18 +108,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 找有没有标题为 "trending-data" 的 issue。
-          # 第一次跑会创建，之后跑会复用同一个 issue（只改 body）。
-          ISSUE_NUM=$(gh issue list --search 'trending-data in:title' --json number --jq '.[0].number // empty')
+          # 找标题以 "trending-data" 开头的 issue。
+          # 不用 --search（GitHub 搜索索引会延迟、有时找不到）。
+          # 改用 --state all + 本地 jq 过滤，更可靠。
+          # 取最小的 number = 第一次创建的那个，保持稳定。
+          ISSUE_NUM=$(gh issue list --state all --limit 100 --json number,title \
+            --jq '[.[] | select(.title | startswith("trending-data"))] | sort_by(.number) | .[0].number // empty')
+
           if [ -z "$ISSUE_NUM" ]; then
-            echo "→ Creating new tracking issue..."
+            echo "→ No existing tracking issue, creating one..."
             gh issue create \
               --title 'trending-data (auto-updated daily; do not close)' \
               --body-file trending.body.txt
-            ISSUE_NUM=$(gh issue list --search 'trending-data in:title' --json number --jq '.[0].number')
+            ISSUE_NUM=$(gh issue list --state all --limit 100 --json number,title \
+              --jq '[.[] | select(.title | startswith("trending-data"))] | sort_by(.number) | .[0].number')
           else
-            echo "→ Updating issue #$ISSUE_NUM..."
+            echo "→ Found tracking issue #$ISSUE_NUM"
+            # 如果是 closed，先 reopen 再 edit
+            STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state')
+            if [ "$STATE" = "CLOSED" ]; then
+              echo "→ Issue is closed, reopening..."
+              gh issue reopen "$ISSUE_NUM"
+            fi
+            echo "→ Updating issue #$ISSUE_NUM body..."
             gh issue edit "$ISSUE_NUM" --body-file trending.body.txt
           fi
+          echo ""
           echo "Cowork should fetch:"
           echo "https://github.com/$GITHUB_REPOSITORY/issues/$ISSUE_NUM"
