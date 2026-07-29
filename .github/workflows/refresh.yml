@@ -2,7 +2,7 @@ name: Refresh HF Trending
 
 on:
   schedule:
-    # 22:30 UTC（前一天）= 06:30 北京时间。
+    # 22:30 UTC（前一天）= 06:30 北京时间。 
     # 之前用 00:30 UTC（08:30 CST）+ 30 分钟缓冲，但 GitHub Actions
     # cron 在 UTC 整点高峰能延迟 50+ 分钟，曾把缓冲吃光让下游拿到旧数据。
     # 改成 22:30 UTC 跑（CST 06:30）—— 这个时间段 Actions 调度更准时，
