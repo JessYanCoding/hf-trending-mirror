@@ -68,7 +68,15 @@ jobs:
           data = json.load(open('github_trending.json', encoding='utf-8'))
 
           def dump():
-              return json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+              text = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+              # 把 < > & ` 转成 JSON 的 \uXXXX 转义：
+              #   - 这些字符在 JSON 里只可能出现在字符串内部，替换后 json.loads 结果完全不变；
+              #   - body 中不再有任何 HTML 标签，即使下游读的是网页渲染版也不会被吞；
+              #   - 没有反引号，README 里的 ``` 无法提前闭合外层代码块。
+              for ch, esc in (('<', '\\u003c'), ('>', '\\u003e'), ('&', '\\u0026'), ('`', '\\u0060')):
+                  text = text.replace(ch, esc)
+              # 用 ```json 代码块包裹：GitHub 网页按代码原样显示，不再做 Markdown/HTML 渲染
+              return ''.join(['```json\n', text, '\n```\n'])
 
           payload = dump()
           readme_limit = 1500
@@ -81,6 +89,10 @@ jobs:
 
           print(f"body size: {len(payload)} chars, readme limit: {readme_limit}")
           assert len(payload) < max_chars, f"too big even without READMEs: {len(payload)}"
+          # 自检：按下游的方式（去代码块标记 → json.loads）能还原出同样的数据，否则不发布
+          inner = payload.strip().removeprefix('```json').removesuffix('```').strip()
+          assert json.loads(inner) == data, "fenced body does not round-trip to original JSON"
+          assert '<' not in payload and '`' not in inner, "raw HTML or backtick leaked into body"
           with open('github_trending.body.txt', 'w', encoding='utf-8') as f:
               f.write(payload)
           PY

@@ -156,9 +156,46 @@ def parse_trending_repos(html: str) -> list:
     return repos
 
 
+# README 清洗用的正则：预编译，避免 25 个仓库重复编译
+HTML_COMMENT_PATTERN = re.compile(r"<!--.*?-->", re.DOTALL)
+# 整块删除的标签（含内容）：脚本/样式/图片容器对写简介没有价值
+HTML_BLOCK_PATTERN = re.compile(r"<(script|style|picture|svg)\b.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+HTML_TAG_PATTERN = re.compile(r"</?[a-zA-Z][^>]*>")
+# 徽章：[![alt](img)](link)，必须先于普通图片处理，否则会残留外层链接
+MARKDOWN_BADGE_PATTERN = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)")
+MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+MARKDOWN_TABLE_SEPARATOR_PATTERN = re.compile(r"^\s*\|?\s*:?-{3,}.*(?:\n|$)", re.MULTILINE)
+MULTI_BLANK_LINE_PATTERN = re.compile(r"\n\s*\n+")
+# 拉取原文时多取一些再清洗，保证清洗后仍有足够正文
+README_RAW_FETCH_MULTIPLIER = 4
+
+
+def clean_readme(raw_text: str) -> str:
+    """
+    清洗 README：去掉 HTML 标签、注释、徽章、图片和表格分隔行，压缩空行。
+
+    为什么要清洗：
+      1. 这些内容对写中文简介没有价值，却占用 issue body 的字符预算；
+      2. 下游若读 issue 网页版，残留的 HTML 会被浏览器/抓取器当真标签处理，
+         破坏 JSON 文本（这是第一次交接失败的直接诱因）。
+    保留 <a>/<p> 等标签内的文字，只去标签本身。
+    """
+    text = HTML_COMMENT_PATTERN.sub("", raw_text)
+    text = HTML_BLOCK_PATTERN.sub("", text)
+    text = MARKDOWN_BADGE_PATTERN.sub("", text)
+    text = MARKDOWN_IMAGE_PATTERN.sub("", text)
+    text = HTML_TAG_PATTERN.sub("", text)
+    text = MARKDOWN_TABLE_SEPARATOR_PATTERN.sub("", text)
+    # 常见 HTML 实体还原为普通字符
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    lines = [line.rstrip() for line in text.splitlines()]
+    text = MULTI_BLANK_LINE_PATTERN.sub("\n\n", "\n".join(lines))
+    return text.strip()
+
+
 def fetch_readme_excerpt(session: requests.Session, full_name: str, token: str, max_chars: int) -> str:
     """
-    通过 REST API 拉取仓库 README 原文并截取前 max_chars 个字符。
+    通过 REST API 拉取仓库 README 原文，清洗后截取前 max_chars 个字符。
 
     使用 application/vnd.github.raw 直接拿原文，省去 base64 解码；
     带 token 时限额为 1000 次/小时/仓库（GITHUB_TOKEN），足够 25 个仓库。
@@ -179,7 +216,9 @@ def fetch_readme_excerpt(session: requests.Session, full_name: str, token: str, 
     if response.status_code == 404:
         return ""
     response.raise_for_status()
-    return response.text[:max_chars]
+    # 先多截一段原文再清洗，最后按 max_chars 截断；直接截原文会被大段 HTML 吃掉预算
+    raw_excerpt = response.text[: max_chars * README_RAW_FETCH_MULTIPLIER]
+    return clean_readme(raw_excerpt)[:max_chars]
 
 
 def main() -> int:
