@@ -2,17 +2,22 @@ name: Refresh HF Trending
 
 on:
   schedule:
-    # 22:30 UTC（前一天）= 06:30 北京时间。 
-    # 之前用 00:30 UTC（08:30 CST）+ 30 分钟缓冲，但 GitHub Actions
-    # cron 在 UTC 整点高峰能延迟 50+ 分钟，曾把缓冲吃光让下游拿到旧数据。
-    # 改成 22:30 UTC 跑（CST 06:30）—— 这个时间段 Actions 调度更准时，
-    # 离 9:00 CST 的下游任务有 2.5 小时缓冲，能扛住绝大多数延迟。
-    - cron: '30 22 * * *'
+    # 一天跑 4 次：17:17 / 19:17 / 21:17 / 23:17 UTC
+    #           = 北京时间 01:17 / 03:17 / 05:17 / 07:17（都在北京时间当天）。
+    # 历史：00:30 UTC 单次跑曾因整点高峰延迟 50+ 分钟；改到 22:30 UTC 后，
+    # 11-19 那次仍晚了 5 小时 13 分才开跑。单次 cron 不可靠，改成夜间多次覆盖，
+    # 每次都覆盖 issue，9:00 CST 前只要有一次跑完就是当天数据。
+    - cron: '17 17,19,21,23 * * *'
   workflow_dispatch:        # Actions 页可手动触发，做首次测试用
 
 permissions:
   contents: write           # 兼容性保留
   issues: write             # 需要写 issue body
+
+# 一天多次定时 + 手动触发，可能撞车；只保留最新一次，避免两个 job 同时 edit 同一个 issue
+concurrency:
+  group: hf-trending-refresh
+  cancel-in-progress: true
 
 jobs:
   refresh:
